@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+     #!/usr/bin/env python3
 """
 Xossipy Clean Reader
 A local Streamlit app to browse xossipy.com without ads/popups.
@@ -32,7 +32,7 @@ TIMEOUT = 20
 
 st.set_page_config(
     page_title="Xossipy Clean Reader",
-    page_icon="?",
+    page_icon="ğŸ“–",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -222,8 +222,8 @@ def apply_theme(dark: bool):
 def main():
     # Sidebar
     with st.sidebar:
-        st.title("? Xossipy Reader")
-        st.caption("Clean local reader ¨C no ads, no popups")
+        st.title("ğŸ“– Xossipy Reader")
+        st.caption("Clean local reader â€“ no ads, no popups")
 
         dark = st.toggle("Dark mode", value=True)
         apply_theme(dark)
@@ -281,7 +281,7 @@ def main():
         st.session_state["url"] = url
         st.session_state["last_loaded"] = url
 
-        with st.spinner("Fetching clean content¡­"):
+        with st.spinner("Fetching clean contentâ€¦"):
             html = fetch(url)
             if not html:
                 return
@@ -308,7 +308,7 @@ def main():
         # Save button
         txt = posts_to_text(data)
         st.download_button(
-            label="? Save story as TXT",
+            label="ğŸ’¾ Save story as TXT",
             data=txt.encode("utf-8"),
             file_name=re.sub(r"[^\w\s-]", "", data.get("title", "story"))[:60].strip() + ".txt",
             mime="text/plain",
@@ -332,7 +332,7 @@ def main():
             st.markdown(
                 f"""
                 <div class="post-card">
-                    <div class="post-meta">#{i} ¡¤ <b>{post['author']}</b> ¡¤ {post['date']}</div>
+                    <div class="post-meta">#{i} Â· <b>{post['author']}</b> Â· {post['date']}</div>
                     <div class="post-body">{post['body']}</div>
                 </div>
                 """,
@@ -350,7 +350,7 @@ def main():
             st.info("No threads or forums detected. Try a different URL or open a specific category.")
         else:
             for item in items:
-                icon = "?" if item["type"] == "forum" else "?"
+                icon = "ğŸ“" if item["type"] == "forum" else "ğŸ“„"
                 if st.button(f"{icon}  {item['title']}", key=item["url"], use_container_width=True):
                     st.session_state["url"] = item["url"]
                     st.rerun()
