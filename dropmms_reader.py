@@ -122,7 +122,6 @@ def parse_gallery_or_list(soup: BeautifulSoup, base_url: str) -> dict:
             break
 
     # 2. Extract Forum/Category links (specifically for index pages like index2.php / forum.php)
-    # Search for links containing 'forum-' or 'forumdisplay.php'
     category_links = soup.select("a[href*='forum-'], a[href*='forumdisplay.php'], strong a[href*='forum']")
     for a in category_links:
         title = clean_text(a.get_text())
