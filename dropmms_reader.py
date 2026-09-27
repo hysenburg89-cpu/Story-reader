@@ -97,24 +97,48 @@ def parse_gallery_or_list(soup: BeautifulSoup, base_url: str) -> dict:
                 continue
 
             # Look for thumbnail image inside the row if present
-            thumb_img = row.select_one("img[src*='attachment'], img[src*='uploads'], img[src*='thumb']")
-            thumb_url = urljoin(base_url, thumb_img["src"]) if thumb_img and thumb_img.get("src") else None
+            def parse_gallery_or_list(soup: BeautifulSoup, base_url: str) -> dict:
+    """Extract forum categories, threads/galleries, and pagination from listing pages."""
+    items = []
+    seen_urls = set()
+
+    # 1. Look for Threads/Galleries first
+    for row in soup.select("tr"):
+        link_candidates = row.select(
+            "span[id^='tid_'] a, a[id^='tid_'], span.subject_old a, span.subject_new a, td.trow1 a[href*='thread-'], td.trow2 a[href*='thread-']"
+        )
+        for link in link_candidates:
+            title = clean_text(link.get_text())
+            href = urljoin(base_url, link.get("href", ""))
+
+            if not title or title.isdigit() or href in seen_urls:
+                continue
+
+            if any(action in href for action in ["action=lastpost", "action=newpost", "page="]):
+                continue
 
             seen_urls.add(href)
-            items.append({"type": "thread", "title": title, "url": href, "thumb": thumb_url})
+            items.append({"type": "thread", "title": title, "url": href, "thumb": None})
             break
 
-    # Fallback for forum/category links
-    if not items:
-        for a in soup.select("a[href*='forum-']"):
-            title = clean_text(a.get_text())
-            href = urljoin(base_url, a.get("href", ""))
-            if not title or len(title) < 2 or href in seen_urls:
-                continue
-            seen_urls.add(href)
-            items.append({"type": "forum", "title": title, "url": href, "thumb": None})
+    # 2. Extract Forum/Category links (specifically for index pages like index2.php / forum.php)
+    # Search for links containing 'forum-' or 'forumdisplay.php'
+    category_links = soup.select("a[href*='forum-'], a[href*='forumdisplay.php'], strong a[href*='forum']")
+    for a in category_links:
+        title = clean_text(a.get_text())
+        href = urljoin(base_url, a.get("href", ""))
 
-    # Pagination
+        if not title or href in seen_urls:
+            continue
+
+        # Filter out breadcrumb / header navigation links
+        if any(ignored in href for ignored in ["action=", "markread", "usercp", "search"]):
+            continue
+
+        seen_urls.add(href)
+        items.append({"type": "forum", "title": title, "url": href, "thumb": None})
+
+    # 3. Extract Pagination
     pages = []
     for a in soup.select(".pagination a, .pagination_page, a.pagination_next, a.pagination_last"):
         href = a.get("href")
@@ -127,19 +151,6 @@ def parse_gallery_or_list(soup: BeautifulSoup, base_url: str) -> dict:
 
     return {"items": items, "pages": pages}
 
-
-def parse_image_thread(soup: BeautifulSoup, base_url: str) -> dict:
-    """Extract all image URLs and post details from a thread page."""
-    title_el = soup.select_one("title")
-    title = clean_text(title_el.get_text()) if title_el else "Gallery"
-    title = re.sub(r"\s*[-|].*$", "", title).strip() or "Gallery"
-
-    images = []
-    seen_imgs = set()
-
-    # Search for all image elements within posts/content areas
-    for img in soup.select("div.post_body img, div.post_content img, td.trow1 img, td.trow2 img"):
-        src = img.get("src") or img.get("data-src") or img.get("file")
         if not src:
             continue
 
