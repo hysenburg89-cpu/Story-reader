@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
 """
-Xossipy Clean Reader
-A local Streamlit app to browse xossipy.com without ads/popups.
-Features: dark/light mode, multi-page threads, save as .txt
+DropMMS Clean Image Viewer
+A Streamlit app to browse image galleries on dropmms.net without ads or popups.
 """
 
 import re
-import io
-from urllib.parse import urljoin, urlparse, parse_qs, urlencode
-from datetime import datetime
-
+from urllib.parse import urljoin, urlparse
 import requests
 import streamlit as st
 from bs4 import BeautifulSoup
@@ -17,7 +13,7 @@ from bs4 import BeautifulSoup
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-BASE = "https://xossipy.com"
+BASE = "https://dropmms.net"
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -25,14 +21,13 @@ HEADERS = {
         "Chrome/120.0.0.0 Safari/537.36"
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://xossipy.com/",
+    "Referer": "https://dropmms.net/",
 }
 TIMEOUT = 20
 
 st.set_page_config(
-    page_title="Xossipy Clean Reader",
-    page_icon="?",
+    page_title="DropMMS Clean Viewer",
+    page_icon="üñºÔ∏è",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -40,10 +35,10 @@ st.set_page_config(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def is_xossipy(url: str) -> bool:
+def is_dropmms(url: str) -> bool:
     try:
         host = urlparse(url).netloc.lower()
-        return "xossipy.com" in host
+        return "dropmms.net" in host
     except Exception:
         return False
 
@@ -69,83 +64,55 @@ def fetch(url: str) -> str | None:
 def clean_text(text: str) -> str:
     if not text:
         return ""
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def get_page_type(url: str) -> str:
     path = urlparse(url).path.lower()
     if "thread-" in path or "showthread" in path:
         return "thread"
-    if "forum-" in path or path.rstrip("/").endswith("forum.php"):
-        return "forum"
-    if path in ("/", "/index.php", "/forum.php"):
-        return "index"
-    return "other"
+    return "list"
 
 
 # ---------------------------------------------------------------------------
 # Parsers
 # ---------------------------------------------------------------------------
-def parse_index_or_forum(soup: BeautifulSoup, base_url: str) -> list[dict]:
-    """Extract forum categories or thread list."""
+def parse_gallery_or_list(soup: BeautifulSoup, base_url: str) -> dict:
+    """Extract threads/galleries and pagination from listing pages."""
     items = []
+    seen_urls = set()
 
-    # Thread list (forum-*.html style)
-    for row in soup.select("tr.inline_row, tr[class*='inline'], table.tborder tr"):
-        link = row.select_one("a[href*='thread-']")
-        if not link:
-            continue
-        title = clean_text(link.get_text())
-        href = urljoin(base_url, link.get("href", ""))
-        meta = clean_text(row.get_text())
-        items.append({"type": "thread", "title": title, "url": href, "meta": meta[:120]})
-
-    if items:
-        return items
-
-    # Category / forum list (forum.php)
-    for a in soup.select("a[href*='forum-']"):
-        title = clean_text(a.get_text())
-        if not title or len(title) < 3:
-            continue
-        href = urljoin(base_url, a.get("href", ""))
-        if any(x["url"] == href for x in items):
-            continue
-        items.append({"type": "forum", "title": title, "url": href, "meta": ""})
-
-    return items
-
-
-def parse_thread(soup: BeautifulSoup, base_url: str) -> dict:
-    """Extract thread title, posts, and pagination."""
-    title_el = soup.select_one("title")
-    title = clean_text(title_el.get_text()) if title_el else "Untitled"
-    title = re.sub(r"\s*[-|].*$", "", title).strip() or "Untitled"
-
-    posts = []
-    for post in soup.select("div.post"):
-        author_el = post.select_one(
-            ".post_author strong a, .author_information strong a, "
-            ".post_author a, .author_information a, span.largetext a"
+    for row in soup.select("tr"):
+        link_candidates = row.select(
+            "span[id^='tid_'] a, a[id^='tid_'], span.subject_old a, span.subject_new a, a[href*='thread-']"
         )
-        author = clean_text(author_el.get_text()) if author_el else "Anonymous"
+        for link in link_candidates:
+            title = clean_text(link.get_text())
+            href = urljoin(base_url, link.get("href", ""))
 
-        date_el = post.select_one(".post_date, span.post_date")
-        date = clean_text(date_el.get_text()) if date_el else ""
+            if not title or title.isdigit() or href in seen_urls:
+                continue
 
-        body_el = post.select_one(".post_body, .post_content")
-        if not body_el:
-            continue
+            if any(action in href for action in ["action=lastpost", "action=newpost", "page="]):
+                continue
 
-        for junk in body_el.select("blockquote, .signature, script, style, .mycode_quote"):
-            junk.decompose()
+            # Look for thumbnail image inside the row if present
+            thumb_img = row.select_one("img[src*='attachment'], img[src*='uploads'], img[src*='thumb']")
+            thumb_url = urljoin(base_url, thumb_img["src"]) if thumb_img and thumb_img.get("src") else None
 
-        body = body_el.get_text(separator="\n", strip=True)
-        body = re.sub(r"\n{3,}", "\n\n", body)
+            seen_urls.add(href)
+            items.append({"type": "thread", "title": title, "url": href, "thumb": thumb_url})
+            break
 
-        if body:
-            posts.append({"author": author, "date": date, "body": body})
+    # Fallback for forum/category links
+    if not items:
+        for a in soup.select("a[href*='forum-']"):
+            title = clean_text(a.get_text())
+            href = urljoin(base_url, a.get("href", ""))
+            if not title or len(title) < 2 or href in seen_urls:
+                continue
+            seen_urls.add(href)
+            items.append({"type": "forum", "title": title, "url": href, "thumb": None})
 
     # Pagination
     pages = []
@@ -158,205 +125,195 @@ def parse_thread(soup: BeautifulSoup, base_url: str) -> dict:
         if full not in [p["url"] for p in pages]:
             pages.append({"label": label, "url": full})
 
-    return {"title": title, "posts": posts, "pages": pages}
+    return {"items": items, "pages": pages}
 
 
-def posts_to_text(data: dict) -> str:
-    lines = [
-        data["title"],
-        "=" * len(data["title"]),
-        f"Fetched: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-        "",
-    ]
-    for i, p in enumerate(data["posts"], 1):
-        lines.append(f"--- Post #{i} by {p['author']} ({p['date']}) ---")
-        lines.append(p["body"])
-        lines.append("")
-    return "\n".join(lines)
+def parse_image_thread(soup: BeautifulSoup, base_url: str) -> dict:
+    """Extract all image URLs and post details from a thread page."""
+    title_el = soup.select_one("title")
+    title = clean_text(title_el.get_text()) if title_el else "Gallery"
+    title = re.sub(r"\s*[-|].*$", "", title).strip() or "Gallery"
+
+    images = []
+    seen_imgs = set()
+
+    # Search for all image elements within posts/content areas
+    for img in soup.select("div.post_body img, div.post_content img, td.trow1 img, td.trow2 img"):
+        src = img.get("src") or img.get("data-src") or img.get("file")
+        if not src:
+            continue
+
+        full_img_url = urljoin(base_url, src)
+
+        # Skip UI icons, avatars, smilies, and buttons
+        if any(ignored in full_img_url.lower() for ignored in ["smilies", "images/", "avatars", "button", "icon"]):
+            continue
+
+        if full_img_url not in seen_imgs:
+            seen_imgs.add(full_img_url)
+            images.append(full_img_url)
+
+    # Check for direct image links wrapping thumbnails
+    for a in soup.select("div.post_body a[href], div.post_content a[href]"):
+        href = a.get("href", "")
+        if href.lower().endswith((".jpg", ".jpeg", ".png", ".webp", ".gif")):
+            full_img_url = urljoin(base_url, href)
+            if full_img_url not in seen_imgs:
+                seen_imgs.add(full_img_url)
+                images.append(full_img_url)
+
+    # Thread Pagination
+    pages = []
+    for a in soup.select(".pagination a, .pagination_page, a.pagination_next, a.pagination_last"):
+        href = a.get("href")
+        if not href:
+            continue
+        full = urljoin(base_url, href)
+        label = clean_text(a.get_text()) or "Next"
+        if full not in [p["url"] for p in pages]:
+            pages.append({"label": label, "url": full})
+
+    return {"title": title, "images": images, "pages": pages}
 
 
 # ---------------------------------------------------------------------------
-# UI
+# UI & Main Loop
 # ---------------------------------------------------------------------------
-def apply_theme(dark: bool):
-    if dark:
-        st.markdown(
-            """
-            <style>
-            .stApp { background-color: #0e1117; color: #e0e0e0; }
-            .main .block-container { padding-top: 1.5rem; }
-            h1, h2, h3 { color: #f0f0f0 !important; }
-            .post-card {
-                background: #1a1d24;
-                border: 1px solid #2a2e38;
-                border-radius: 10px;
-                padding: 1.2rem 1.4rem;
-                margin-bottom: 1.2rem;
-            }
-            .post-meta { color: #9aa0a6; font-size: 0.85rem; margin-bottom: 0.6rem; }
-            .post-body { line-height: 1.65; white-space: pre-wrap; font-size: 1.05rem; }
-            a { color: #7cb3ff !important; }
-            </style>
-            """,
-            unsafe_allow_html=True,
-        )
-    else:
-        st.markdown(
-            """
-            <style>
-            .post-card {
-                background: #f8f9fa;
-                border: 1px solid #dee2e6;
-                border-radius: 10px;
-                padding: 1.2rem 1.4rem;
-                margin-bottom: 1.2rem;
-            }
-            .post-meta { color: #6c757d; font-size: 0.85rem; margin-bottom: 0.6rem; }
-            .post-body { line-height: 1.65; white-space: pre-wrap; font-size: 1.05rem; }
-            </style>
-            """,
-            unsafe_allow_html=True,
-        )
-
-
 def main():
+    # Session state initialization
+    if "history" not in st.session_state:
+        st.session_state["history"] = []
+
     # Sidebar
     with st.sidebar:
-        st.title("? Xossipy Reader")
-        st.caption("Clean local reader ®C no ads, no popups")
-
-        dark = st.toggle("Dark mode", value=True)
-        apply_theme(dark)
+        st.title("üñºÔ∏è DropMMS Viewer")
+        st.caption("Clean image gallery browser")
 
         st.divider()
-        st.markdown("**Quick links**")
-        if st.button("Forum Index", use_container_width=True):
-            st.session_state["url"] = f"{BASE}/forum.php"
-            st.rerun()
-        if st.button("English Stories", use_container_width=True):
-            st.session_state["url"] = f"{BASE}/forum-17.html"
-            st.rerun()
-        if st.button("Hindi Stories", use_container_width=True):
-            st.session_state["url"] = f"{BASE}/forum-18.html"
-            st.rerun()
-        if st.button("Telugu Stories", use_container_width=True):
-            st.session_state["url"] = f"{BASE}/forum-15.html"
-            st.rerun()
-        if st.button("Tamil Stories", use_container_width=True):
-            st.session_state["url"] = f"{BASE}/forum-19.html"
+        st.markdown("**Quick Navigation**")
+
+        def navigate_to(url_target):
+            if st.session_state.get("last_loaded"):
+                st.session_state["history"].append(st.session_state["last_loaded"])
+            st.session_state["url"] = url_target
             st.rerun()
 
-        st.divider()
-        st.markdown(
-            """
-            **How to use**
-            1. Paste any xossipy.com URL  
-            2. Click **Load**  
-            3. Browse threads or read stories  
-            4. Use **Save as TXT** to download
-            """
-        )
+        if st.button("Home Index", use_container_width=True):
+            navigate_to(f"{BASE}/index2.php")
 
-    # Main area
-    st.title("Xossipy Clean Reader")
+    # Main Area UI
+    st.title("DropMMS Image Gallery")
 
-    default_url = st.session_state.get("url", f"{BASE}/forum.php")
-    col1, col2 = st.columns([5, 1])
+    default_url = st.session_state.get("url", f"{BASE}/index2.php")
+
+    col1, col2, col3 = st.columns([4, 1, 1])
     with col1:
         url_input = st.text_input(
             "Paste URL",
             value=default_url,
-            placeholder="https://xossipy.com/thread-12345.html",
+            placeholder="https://dropmms.net/thread-12345.html",
             label_visibility="collapsed",
         )
     with col2:
         load = st.button("Load", type="primary", use_container_width=True)
+    with col3:
+        can_go_back = len(st.session_state["history"]) > 0
+        if st.button("‚¨Ö Back", disabled=not can_go_back, use_container_width=True):
+            previous_url = st.session_state["history"].pop()
+            st.session_state["url"] = previous_url
+            st.session_state["last_loaded"] = None
+            st.rerun()
 
-    if load or (url_input and url_input != st.session_state.get("last_loaded")):
-        url = normalize_url(url_input)
-        if not is_xossipy(url):
-            st.warning("Please enter a valid xossipy.com URL.")
-            return
+    current_url = normalize_url(url_input)
+    last_loaded = st.session_state.get("last_loaded")
 
-        st.session_state["url"] = url
-        st.session_state["last_loaded"] = url
+    # Fetch data on button click or URL change
+    if (load or (url_input and current_url != last_loaded)) and is_dropmms(current_url):
+        if last_loaded and last_loaded != current_url:
+            st.session_state["history"].append(last_loaded)
 
-        with st.spinner("Fetching clean content°≠"):
-            html = fetch(url)
-            if not html:
-                return
-            soup = BeautifulSoup(html, "lxml")
-            page_type = get_page_type(url)
+        st.session_state["url"] = current_url
+        st.session_state["last_loaded"] = current_url
 
-            if page_type == "thread":
-                data = parse_thread(soup, url)
-                st.session_state["thread_data"] = data
-                st.session_state["page_type"] = "thread"
-            else:
-                items = parse_index_or_forum(soup, url)
-                st.session_state["list_items"] = items
-                st.session_state["page_type"] = "list"
-                st.session_state["list_title"] = soup.title.get_text() if soup.title else "Forum"
+        with st.spinner("Fetching image content‚Ä¶"):
+            html = fetch(current_url)
+            if html:
+                soup = BeautifulSoup(html, "lxml")
+                page_type = get_page_type(current_url)
 
-    # Render content
+                if page_type == "thread":
+                    data = parse_image_thread(soup, current_url)
+                    st.session_state["thread_data"] = data
+                    st.session_state["page_type"] = "thread"
+                else:
+                    data = parse_gallery_or_list(soup, current_url)
+                    st.session_state["list_data"] = data
+                    st.session_state["page_type"] = "list"
+                    st.session_state["list_title"] = (
+                        soup.title.get_text() if soup.title else "Galleries"
+                    )
+
+    # Render Content
     page_type = st.session_state.get("page_type")
 
+    # Thread / Image View
     if page_type == "thread":
         data = st.session_state.get("thread_data", {})
-        st.subheader(data.get("title", "Thread"))
+        st.subheader(data.get("title", "Gallery"))
 
-        # Save button
-        txt = posts_to_text(data)
-        st.download_button(
-            label="? Save story as TXT",
-            data=txt.encode("utf-8"),
-            file_name=re.sub(r"[^\w\s-]", "", data.get("title", "story"))[:60].strip() + ".txt",
-            mime="text/plain",
-            use_container_width=False,
-        )
-
-        # Pagination
+        images = data.get("images", [])
         pages = data.get("pages", [])
+
+        # Display Thread Pagination
         if pages:
             st.markdown("**Pages:**")
-            cols = st.columns(min(len(pages), 8))
-            for i, p in enumerate(pages[:8]):
+            cols = st.columns(min(len(pages), 10))
+            for i, p in enumerate(pages[:10]):
                 with cols[i]:
-                    if st.button(p["label"], key=f"page_{i}", use_container_width=True):
-                        st.session_state["url"] = p["url"]
-                        st.rerun()
+                    if st.button(p["label"], key=f"thread_page_{i}", use_container_width=True):
+                        navigate_to(p["url"])
 
         st.divider()
 
-        for i, post in enumerate(data.get("posts", []), 1):
-            st.markdown(
-                f"""
-                <div class="post-card">
-                    <div class="post-meta">#{i} °§ <b>{post['author']}</b> °§ {post['date']}</div>
-                    <div class="post-body">{post['body']}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+        if not images:
+            st.info("No images detected in this thread.")
+        else:
+            # Render images in a 3-column responsive grid layout
+            cols_per_row = 3
+            grid_cols = st.columns(cols_per_row)
 
-        if not data.get("posts"):
-            st.info("No posts found on this page. The site structure may have changed or the page requires login.")
+            for idx, img_url in enumerate(images):
+                with grid_cols[idx % cols_per_row]:
+                    st.image(img_url, use_container_width=True)
 
+    # List / Gallery View
     elif page_type == "list":
-        items = st.session_state.get("list_items", [])
-        st.subheader(st.session_state.get("list_title", "Forum"))
+        list_data = st.session_state.get("list_data", {})
+        items = list_data.get("items", [])
+        pages = list_data.get("pages", [])
+
+        st.subheader(st.session_state.get("list_title", "Galleries"))
 
         if not items:
-            st.info("No threads or forums detected. Try a different URL or open a specific category.")
+            st.info("No galleries found on this page.")
         else:
             for item in items:
-                icon = "?" if item["type"] == "forum" else "?"
+                icon = "üìÅ" if item["type"] == "forum" else "üñºÔ∏è"
                 if st.button(f"{icon}  {item['title']}", key=item["url"], use_container_width=True):
-                    st.session_state["url"] = item["url"]
-                    st.rerun()
+                    navigate_to(item["url"])
+
+        # Display Gallery List Pagination
+        if pages:
+            st.divider()
+            st.markdown("**Pages:**")
+            cols = st.columns(min(len(pages), 10))
+            for i, p in enumerate(pages[:10]):
+                with cols[i]:
+                    if st.button(p["label"], key=f"forum_page_{i}", use_container_width=True):
+                        navigate_to(p["url"])
 
     else:
-        st.info("Paste a xossipy.com URL above and click **Load** to start.")
+        st.info("Paste a dropmms.net URL above and click **Load** to start browsing images.")
 
 
 if __name__ == "__main__":
