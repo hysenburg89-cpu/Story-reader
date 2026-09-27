@@ -18,9 +18,18 @@ HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
+        "Chrome/122.0.0.0 Safari/537.36"
     ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
     "Referer": "https://dropmms.net/",
 }
 TIMEOUT = 20
@@ -52,7 +61,8 @@ def normalize_url(url: str) -> str:
 
 def fetch(url: str) -> str | None:
     try:
-        r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+        session = requests.Session()
+        r = session.get(url, headers=HEADERS, timeout=TIMEOUT)
         r.raise_for_status()
         r.encoding = r.apparent_encoding or "utf-8"
         return r.text
@@ -82,7 +92,7 @@ def parse_gallery_or_list(soup: BeautifulSoup, base_url: str) -> dict:
     items = []
     seen_urls = set()
 
-    # 1. Look for Threads/Galleries first
+    # 1. Thread Extraction
     for row in soup.select("tr"):
         link_candidates = row.select(
             "span[id^='tid_'] a, a[id^='tid_'], span.subject_old a, span.subject_new a, td.trow1 a[href*='thread-'], td.trow2 a[href*='thread-']"
@@ -98,26 +108,39 @@ def parse_gallery_or_list(soup: BeautifulSoup, base_url: str) -> dict:
                 continue
 
             seen_urls.add(href)
-            items.append({"type": "thread", "title": title, "url": href, "thumb": None})
+            items.append({"type": "thread", "title": title, "url": href})
             break
 
-    # 2. Extract Forum/Category links (specifically for index pages like index2.php / forum.php)
-    category_links = soup.select("a[href*='forum-'], a[href*='forumdisplay.php'], strong a[href*='forum']")
-    for a in category_links:
+    # 2. Broad Link Extraction for Index / Category listings (forum.php, index2.php)
+    all_links = soup.select("a[href]")
+    for a in all_links:
+        href = a.get("href", "")
         title = clean_text(a.get_text())
-        href = urljoin(base_url, a.get("href", ""))
 
-        if not title or href in seen_urls:
+        if not title or len(title) < 2:
             continue
 
-        # Filter out breadcrumb / header navigation links
-        if any(ignored in href for ignored in ["action=", "markread", "usercp", "search"]):
+        full_url = urljoin(base_url, href)
+
+        if full_url in seen_urls:
             continue
 
-        seen_urls.add(href)
-        items.append({"type": "forum", "title": title, "url": href, "thumb": None})
+        # Target forum categories or thread patterns
+        is_forum_link = any(p in href.lower() for p in ["forum-", "forumdisplay.php", "index.php?fid="])
+        is_thread_link = any(p in href.lower() for p in ["thread-", "showthread.php"])
 
-    # 3. Extract Pagination
+        # Ignore utility links
+        if any(ign in href.lower() for ign in ["action=", "member.php", "search.php", "usercp.php", "misc.php", "online.php", "#"]):
+            continue
+
+        if is_forum_link:
+            seen_urls.add(full_url)
+            items.append({"type": "forum", "title": title, "url": full_url})
+        elif is_thread_link and not any(it["url"] == full_url for it in items):
+            seen_urls.add(full_url)
+            items.append({"type": "thread", "title": title, "url": full_url})
+
+    # 3. Pagination Extraction
     pages = []
     for a in soup.select(".pagination a, .pagination_page, a.pagination_next, a.pagination_last"):
         href = a.get("href")
@@ -140,24 +163,24 @@ def parse_image_thread(soup: BeautifulSoup, base_url: str) -> dict:
     images = []
     seen_imgs = set()
 
-    # Search for all image elements within posts/content areas
-    for img in soup.select("div.post_body img, div.post_content img, td.trow1 img, td.trow2 img"):
+    # Find image tags
+    for img in soup.select("img"):
         src = img.get("src") or img.get("data-src") or img.get("file")
         if not src:
             continue
 
         full_img_url = urljoin(base_url, src)
 
-        # Skip UI icons, avatars, smilies, and buttons
-        if any(ignored in full_img_url.lower() for ignored in ["smilies", "images/", "avatars", "button", "icon"]):
+        # Skip UI assets, smilies, icons
+        if any(ignored in full_img_url.lower() for ignored in ["smilies", "images/", "avatars", "button", "icon", "logo", "style"]):
             continue
 
         if full_img_url not in seen_imgs:
             seen_imgs.add(full_img_url)
             images.append(full_img_url)
 
-    # Check for direct image links wrapping thumbnails
-    for a in soup.select("div.post_body a[href], div.post_content a[href]"):
+    # Find direct image links wrapping thumbs
+    for a in soup.select("a[href]"):
         href = a.get("href", "")
         if href.lower().endswith((".jpg", ".jpeg", ".png", ".webp", ".gif")):
             full_img_url = urljoin(base_url, href)
@@ -165,7 +188,7 @@ def parse_image_thread(soup: BeautifulSoup, base_url: str) -> dict:
                 seen_imgs.add(full_img_url)
                 images.append(full_img_url)
 
-    # Thread Pagination
+    # Pagination
     pages = []
     for a in soup.select(".pagination a, .pagination_page, a.pagination_next, a.pagination_last"):
         href = a.get("href")
@@ -183,7 +206,6 @@ def parse_image_thread(soup: BeautifulSoup, base_url: str) -> dict:
 # UI & Main Loop
 # ---------------------------------------------------------------------------
 def main():
-    # Session state initialization
     if "history" not in st.session_state:
         st.session_state["history"] = []
 
@@ -204,7 +226,7 @@ def main():
         if st.button("Home Index", use_container_width=True):
             navigate_to(f"{BASE}/index2.php")
 
-    # Main Area UI
+    # Main UI
     st.title("DropMMS Image Gallery")
 
     default_url = st.session_state.get("url", f"{BASE}/index2.php")
@@ -230,7 +252,6 @@ def main():
     current_url = normalize_url(url_input)
     last_loaded = st.session_state.get("last_loaded")
 
-    # Fetch data on button click or URL change
     if (load or (url_input and current_url != last_loaded)) and is_dropmms(current_url):
         if last_loaded and last_loaded != current_url:
             st.session_state["history"].append(last_loaded)
@@ -267,7 +288,6 @@ def main():
         images = data.get("images", [])
         pages = data.get("pages", [])
 
-        # Display Thread Pagination
         if pages:
             st.markdown("**Pages:**")
             cols = st.columns(min(len(pages), 10))
@@ -281,7 +301,6 @@ def main():
         if not images:
             st.info("No images detected in this thread.")
         else:
-            # Render images in a 3-column responsive grid layout
             cols_per_row = 3
             grid_cols = st.columns(cols_per_row)
 
@@ -298,14 +317,13 @@ def main():
         st.subheader(st.session_state.get("list_title", "Galleries"))
 
         if not items:
-            st.info("No galleries found on this page.")
+            st.info("No galleries found on this page. If this persists, try pasting a direct sub-forum URL (e.g., https://dropmms.net/forum-X.html).")
         else:
             for item in items:
                 icon = "📁" if item["type"] == "forum" else "🖼️"
                 if st.button(f"{icon}  {item['title']}", key=item["url"], use_container_width=True):
                     navigate_to(item["url"])
 
-        # Display Gallery List Pagination
         if pages:
             st.divider()
             st.markdown("**Pages:**")
