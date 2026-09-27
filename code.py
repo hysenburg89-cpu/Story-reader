@@ -1,4 +1,4 @@
-     #!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Xossipy Clean Reader
 A local Streamlit app to browse xossipy.com without ads/popups.
@@ -7,7 +7,7 @@ Features: dark/light mode, multi-page threads, save as .txt
 
 import re
 import io
-from urllib.parse import urljoin, urlparse, parse_qs, urlencode
+from urllib.parse import urljoin, urlparse
 from datetime import datetime
 
 import requests
@@ -87,34 +87,53 @@ def get_page_type(url: str) -> str:
 # ---------------------------------------------------------------------------
 # Parsers
 # ---------------------------------------------------------------------------
-def parse_index_or_forum(soup: BeautifulSoup, base_url: str) -> list[dict]:
-    """Extract forum categories or thread list."""
+def parse_index_or_forum(soup: BeautifulSoup, base_url: str) -> dict:
+    """Extract forum categories, thread list, and pagination."""
     items = []
 
-    # Thread list (forum-*.html style)
-    for row in soup.select("tr.inline_row, tr[class*='inline'], table.tborder tr"):
-        link = row.select_one("a[href*='thread-']")
+    # 1. Thread list parsing (MyBB Specific Selectors)
+    rows = soup.select("tr.inline_row, table.tborder tr")
+    for row in rows:
+        # Target specific thread title links rather than generic hrefs
+        link = row.select_one("span[id^='tid_'] a, span.subject_old a, span.subject_new a, td.trow1 a[href*='thread-'], td.trow2 a[href*='thread-']")
         if not link:
             continue
+        
         title = clean_text(link.get_text())
+        if not title:
+            continue
+            
         href = urljoin(base_url, link.get("href", ""))
-        meta = clean_text(row.get_text())
-        items.append({"type": "thread", "title": title, "url": href, "meta": meta[:120]})
-
-    if items:
-        return items
-
-    # Category / forum list (forum.php)
-    for a in soup.select("a[href*='forum-']"):
-        title = clean_text(a.get_text())
-        if not title or len(title) < 3:
+        
+        # Deduplicate
+        if any(item["url"] == href for item in items):
             continue
-        href = urljoin(base_url, a.get("href", ""))
-        if any(x["url"] == href for x in items):
-            continue
-        items.append({"type": "forum", "title": title, "url": href, "meta": ""})
 
-    return items
+        items.append({"type": "thread", "title": title, "url": href, "meta": ""})
+
+    # 2. Forum category listing if no threads found
+    if not items:
+        for a in soup.select("a[href*='forum-']"):
+            title = clean_text(a.get_text())
+            if not title or len(title) < 2:
+                continue
+            href = urljoin(base_url, a.get("href", ""))
+            if any(item["url"] == href for item in items):
+                continue
+            items.append({"type": "forum", "title": title, "url": href, "meta": ""})
+
+    # 3. Forum Pagination
+    pages = []
+    for a in soup.select(".pagination a, .pagination_page, a.pagination_next, a.pagination_last"):
+        href = a.get("href")
+        if not href:
+            continue
+        full = urljoin(base_url, href)
+        label = clean_text(a.get_text()) or "Next"
+        if full not in [p["url"] for p in pages]:
+            pages.append({"label": label, "url": full})
+
+    return {"items": items, "pages": pages}
 
 
 def parse_thread(soup: BeautifulSoup, base_url: str) -> dict:
@@ -124,7 +143,7 @@ def parse_thread(soup: BeautifulSoup, base_url: str) -> dict:
     title = re.sub(r"\s*[-|].*$", "", title).strip() or "Untitled"
 
     posts = []
-    for post in soup.select("div.post"):
+    for post in soup.select("div.post, table.tborder[id^='post_']"):
         author_el = post.select_one(
             ".post_author strong a, .author_information strong a, "
             ".post_author a, .author_information a, span.largetext a"
@@ -293,8 +312,8 @@ def main():
                 st.session_state["thread_data"] = data
                 st.session_state["page_type"] = "thread"
             else:
-                items = parse_index_or_forum(soup, url)
-                st.session_state["list_items"] = items
+                data = parse_index_or_forum(soup, url)
+                st.session_state["list_data"] = data
                 st.session_state["page_type"] = "list"
                 st.session_state["list_title"] = soup.title.get_text() if soup.title else "Forum"
 
@@ -315,14 +334,14 @@ def main():
             use_container_width=False,
         )
 
-        # Pagination
+        # Pagination for thread
         pages = data.get("pages", [])
         if pages:
             st.markdown("**Pages:**")
             cols = st.columns(min(len(pages), 8))
             for i, p in enumerate(pages[:8]):
                 with cols[i]:
-                    if st.button(p["label"], key=f"page_{i}", use_container_width=True):
+                    if st.button(p["label"], key=f"thread_page_{i}", use_container_width=True):
                         st.session_state["url"] = p["url"]
                         st.rerun()
 
@@ -343,7 +362,10 @@ def main():
             st.info("No posts found on this page. The site structure may have changed or the page requires login.")
 
     elif page_type == "list":
-        items = st.session_state.get("list_items", [])
+        list_data = st.session_state.get("list_data", {})
+        items = list_data.get("items", [])
+        pages = list_data.get("pages", [])
+
         st.subheader(st.session_state.get("list_title", "Forum"))
 
         if not items:
@@ -354,6 +376,17 @@ def main():
                 if st.button(f"{icon}  {item['title']}", key=item["url"], use_container_width=True):
                     st.session_state["url"] = item["url"]
                     st.rerun()
+
+        # Pagination for list view
+        if pages:
+            st.divider()
+            st.markdown("**Pages:**")
+            cols = st.columns(min(len(pages), 10))
+            for i, p in enumerate(pages[:10]):
+                with cols[i]:
+                    if st.button(p["label"], key=f"forum_page_{i}", use_container_width=True):
+                        st.session_state["url"] = p["url"]
+                        st.rerun()
 
     else:
         st.info("Paste a xossipy.com URL above and click **Load** to start.")
