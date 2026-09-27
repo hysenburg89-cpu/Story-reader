@@ -90,37 +90,51 @@ def get_page_type(url: str) -> str:
 def parse_index_or_forum(soup: BeautifulSoup, base_url: str) -> dict:
     """Extract forum categories, thread list, and pagination."""
     items = []
+    seen_urls = set()
 
-    # 1. Thread list parsing (MyBB Specific Selectors)
-    rows = soup.select("tr.inline_row, table.tborder tr")
-    for row in rows:
-        # Target specific thread title links rather than generic hrefs
-        link = row.select_one("span[id^='tid_'] a, span.subject_old a, span.subject_new a, td.trow1 a[href*='thread-'], td.trow2 a[href*='thread-']")
-        if not link:
-            continue
+    # Target specific thread rows in MyBB
+    for row in soup.select("tr"):
+        # Look specifically for thread title elements or links with text
+        link_candidates = row.select("span[id^='tid_'] a, a[id^='tid_'], span.subject_old a, span.subject_new a, a[href*='thread-']")
         
-        title = clean_text(link.get_text())
-        if not title:
-            continue
+        for link in link_candidates:
+            title = clean_text(link.get_text())
+            href = urljoin(base_url, link.get("href", ""))
             
-        href = urljoin(base_url, link.get("href", ""))
-        
-        # Deduplicate
-        if any(item["url"] == href for item in items):
-            continue
+            # Skip empty titles, mini-page numbers (e.g., "1", "2", "3"), or already processed URLs
+            if not title or title.isdigit() or href in seen_urls:
+                continue
+            
+            # Filter out non-thread action links (e.g., "lastpost", "newpost")
+            if any(action in href for action in ["action=lastpost", "action=newpost", "page="]):
+                continue
 
-        items.append({"type": "thread", "title": title, "url": href, "meta": ""})
+            seen_urls.add(href)
+            items.append({"type": "thread", "title": title, "url": href, "meta": ""})
+            break  # Found the primary title for this row, move to next row
 
-    # 2. Forum category listing if no threads found
+    # Fallback to category/forum listing if no thread titles found
     if not items:
         for a in soup.select("a[href*='forum-']"):
             title = clean_text(a.get_text())
-            if not title or len(title) < 2:
-                continue
             href = urljoin(base_url, a.get("href", ""))
-            if any(item["url"] == href for item in items):
+            if not title or len(title) < 2 or href in seen_urls:
                 continue
+            seen_urls.add(href)
             items.append({"type": "forum", "title": title, "url": href, "meta": ""})
+
+    # Forum Pagination
+    pages = []
+    for a in soup.select(".pagination a, .pagination_page, a.pagination_next, a.pagination_last"):
+        href = a.get("href")
+        if not href:
+            continue
+        full = urljoin(base_url, href)
+        label = clean_text(a.get_text()) or "Next"
+        if full not in [p["url"] for p in pages]:
+            pages.append({"label": label, "url": full})
+
+    return {"items": items, "pages": pages}
 
     # 3. Forum Pagination
     pages = []
