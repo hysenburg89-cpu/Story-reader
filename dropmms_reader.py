@@ -78,26 +78,6 @@ def get_page_type(url: str) -> str:
 # Parsers
 # ---------------------------------------------------------------------------
 def parse_gallery_or_list(soup: BeautifulSoup, base_url: str) -> dict:
-    """Extract threads/galleries and pagination from listing pages."""
-    items = []
-    seen_urls = set()
-
-    for row in soup.select("tr"):
-        link_candidates = row.select(
-            "span[id^='tid_'] a, a[id^='tid_'], span.subject_old a, span.subject_new a, a[href*='thread-']"
-        )
-        for link in link_candidates:
-            title = clean_text(link.get_text())
-            href = urljoin(base_url, link.get("href", ""))
-
-            if not title or title.isdigit() or href in seen_urls:
-                continue
-
-            if any(action in href for action in ["action=lastpost", "action=newpost", "page="]):
-                continue
-
-            # Look for thumbnail image inside the row if present
-            def parse_gallery_or_list(soup: BeautifulSoup, base_url: str) -> dict:
     """Extract forum categories, threads/galleries, and pagination from listing pages."""
     items = []
     seen_urls = set()
@@ -150,6 +130,19 @@ def parse_gallery_or_list(soup: BeautifulSoup, base_url: str) -> dict:
 
     return {"items": items, "pages": pages}
 
+
+def parse_image_thread(soup: BeautifulSoup, base_url: str) -> dict:
+    """Extract all image URLs and post details from a thread page."""
+    title_el = soup.select_one("title")
+    title = clean_text(title_el.get_text()) if title_el else "Gallery"
+    title = re.sub(r"\s*[-|].*$", "", title).strip() or "Gallery"
+
+    images = []
+    seen_imgs = set()
+
+    # Search for all image elements within posts/content areas
+    for img in soup.select("div.post_body img, div.post_content img, td.trow1 img, td.trow2 img"):
+        src = img.get("src") or img.get("data-src") or img.get("file")
         if not src:
             continue
 
